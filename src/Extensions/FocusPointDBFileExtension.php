@@ -11,6 +11,10 @@ use SilverStripe\View\ViewableData;
  */
 class FocusPointDBFileExtension extends FocusPointExtension
 {
+
+    // silence some errors
+    public $FocusPoint;
+
     /**
      * Get focus point for this image; Prevent failover to backend Image
      *
