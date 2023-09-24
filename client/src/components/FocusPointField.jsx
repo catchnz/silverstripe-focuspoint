@@ -5,6 +5,7 @@ import { inject } from 'lib/Injector';
 
 class FocusPointField extends React.Component {
 
+
   constructor(props) {
     super(props);
     this.state = {

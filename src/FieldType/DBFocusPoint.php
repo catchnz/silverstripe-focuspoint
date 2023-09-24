@@ -2,17 +2,22 @@
 
 namespace JonoM\FocusPoint\FieldType;
 
-
+use InvalidArgumentException;
 use JonoM\FocusPoint\Forms\FocusPointField;
 use SilverStripe\Assets\Image;
 use SilverStripe\Assets\Image_Backend;
-use SilverStripe\Assets\Storage\AssetContainer;
 use SilverStripe\Assets\Storage\DBFile;
-use SilverStripe\Core\Config\Config;
 use SilverStripe\ORM\FieldType\DBComposite;
-use SilverStripe\ORM\FieldType\DBField;
 
-
+/**
+ * Focus point composite field.
+ *
+ * @property double $X
+ * @property double $Y
+ * @property int $Width
+ * @property int $Height
+ * @property DBFile|Image $record
+ */
 class DBFocusPoint extends DBComposite
 {
     /**
@@ -22,50 +27,99 @@ class DBFocusPoint extends DBComposite
      */
     private static $composite_db = [
         'X' => 'Double',
-        'Y' => 'Double'
+        'Y' => 'Double',
+        'Width' => 'Int', // Cached width for this image
+        'Height' => 'Int', // Cached height for this image
     ];
 
     /**
      * Focus X
-     * @return double Decimal number between -1 & 1, where -1 is far left, 0 is center, 1 is far right.
+     *
+     * @return float Decimal number between -1 & 1, where -1 is far left, 0 is center, 1 is far right.
      */
-    public function getX()
+    public function getX(): float
     {
-        return (double)$this->getField('X');
+        return (float) $this->getField('X');
     }
 
     /**
      * Set the focus point X coordinate
-     * @param double $value
+     *
+     * @param float $value
      * @return $this
      */
-    public function setX($value)
+    public function setX(float $value): self
     {
         $this->setField('X', min(1, max(-1, $value)));
+
         return $this;
     }
 
     /**
      * Focus Y
-     * @return double Decimal number between -1 & 1, where -1 is top, 0 is center, 1 is bottom.
+     *
+     * @return float Decimal number between -1 & 1, where -1 is top, 0 is center, 1 is bottom.
      */
-    public function getY()
+    public function getY(): float
     {
-        return (double)$this->getField('Y');
+        return (float)$this->getField('Y');
+    }
+
+    /**
+     * Get width of the original image.
+     */
+    public function getWidth(): int
+    {
+        $width = $this->getField('Width');
+
+        if ($width) {
+            return intval($width);
+        }
+
+        if (is_object($this->record)) {
+            return intval($this->record->getWidth());
+        }
+
+        if (is_array($this->record) && isset($this->record['Width'])) {
+            return intval($this->record['Width']);
+        }
+
+        return 0;
+    }
+
+    /**
+     * Get height of the original image
+     */
+    public function getHeight(): int
+    {
+        $height = $this->getField('Height');
+
+        if ($height) {
+            return intval($height);
+        }
+
+        if (is_object($this->record)) {
+            return intval($this->record->getHeight());
+        }
+
+        if (is_array($this->record) && isset($this->record['Height'])) {
+            return intval($this->record['Height']);
+        }
+
+        return 0;
     }
 
     /**
      * Set the focus point Y coordinate
-     * @param double $value
-     * @return $this
      */
-    public function setY($value)
+    public function setY(float $value): self
     {
         $this->setField('Y', min(1, max(-1, $value)));
+
         return $this;
     }
 
-    public function exists()
+    public function exists(): bool
     {
         // Is always true for this composite field, since it defaults to 0,0
         return true;
@@ -73,9 +127,8 @@ class DBFocusPoint extends DBComposite
 
     /**
      * @inheritdoc
-     * @return FocusPointField
      */
-    public function scaffoldFormField($title = null, $params = null)
+    public function scaffoldFormField($title = null, $params = null): FocusPointField
     {
         return FocusPointField::create(
             $this->name,
@@ -86,20 +139,20 @@ class DBFocusPoint extends DBComposite
 
     /**
      * Turn a focus x/y coordinate in to an offset from left or top
-     * @param double $coord the coordinate to transform
-     * @return double
+     *
+     * @param float $coord the coordinate to transform
      */
-    public static function focusCoordToOffset($coord)
+    public static function focusCoordToOffset(float $coord): float
     {
         return ($coord + 1) * 0.5;
     }
 
     /**
      * Turn a left/top offset in to a focus x/y coordinate
-     * @param double $offset the offset to transform
-     * @return double
+     *
+     * @param float $offset the offset to transform
      */
-    public static function focusOffsetToCoord($offset)
+    public static function focusOffsetToCoord(float $offset): float
     {
         return $offset * 2 - 1;
     }
@@ -107,14 +160,43 @@ class DBFocusPoint extends DBComposite
     /**
      * Caluclate crop data given the desired width and height, as well as original width and height.
      * Calculates required crop coordinates using current FocusX and FocusY
-     * @param int $width desired width
-     * @param int $height desired height
-     * @param int $originalWidth original image width
-     * @param int $originalHeight original image height
-     * @return array|bool
+     *
+     * @param int|null $width desired width. Can be omitted as long as $height is provided.
+     * @param int|null $height desired height. Can be omitted as long as $width is provided.
+     * @param bool $upscale Is this being upscaled?
+     * @return array|null Array with fields x, y, each with array of FocusPoint, OriginalLength and TargetLength
+     * Can return null if error
      */
-    public function calculateCrop($width, $height, $originalWidth, $originalHeight)
+    public function calculateCrop(?int $width, ?int $height, bool $upscale): ?array
     {
+        // Requested to resize to 0 results in an error
+        if (empty($width) && empty($height)) {
+            throw new InvalidArgumentException("Width and Height cannot be resized to 0");
+        }
+
+        // Not so much an error, but ignore empty files
+        if (empty($this->Width) || empty($this->Height)) {
+            return null;
+        }
+
+        // Assign targets, considering that we may only be scaling on one dimension
+        $targetWidth = $width ?: $this->Width;
+        $targetHeight = $height ?: $this->Height;
+
+        // Handle upscaling
+        if (!$upscale) {
+            $widthRatio = $this->Width / $targetWidth;
+            $heightRatio = $this->Height / $targetHeight;
+
+            if ($widthRatio < 1 && $widthRatio <= $heightRatio) {
+                $targetWidth = $this->Width;
+                $targetHeight = intval(round($targetHeight * $widthRatio));
+            } elseif ($heightRatio < 1) {
+                $targetHeight = $this->Height;
+                $targetWidth = intval(round($targetWidth * $heightRatio));
+            }
+        }
+
         // Work out how to crop the image and provide new focus coordinates
         $cropData = [
             'CropAxis' => 0,
@@ -123,25 +205,22 @@ class DBFocusPoint extends DBComposite
 
         $cropData['x'] = [
             'FocusPoint' => $this->getX(),
-            'OriginalLength' => $originalWidth,
-            'TargetLength' => round($width),
+            'OriginalLength' => $this->Width,
+            'TargetLength' => $targetWidth,
+            'ScaleRatio' => $this->Width / $targetWidth,
         ];
 
         $cropData['y'] = [
             'FocusPoint' => $this->getY(),
-            'OriginalLength' => $originalHeight,
-            'TargetLength' => round($height),
+            'OriginalLength' => $this->Height,
+            'TargetLength' => $targetHeight,
+            'ScaleRatio' => $this->Height / $targetHeight,
         ];
 
-        // Avoid divide by zero error
-        if (!($cropData['x']['OriginalLength'] > 0 && $cropData['y']['OriginalLength'] > 0)) {
-            return false;
-        }
-
         // Work out which axis to crop on
-        $cropAxis = false;
-        $cropData['x']['ScaleRatio'] = $cropData['x']['OriginalLength'] / $cropData['x']['TargetLength'];
-        $cropData['y']['ScaleRatio'] = $cropData['y']['OriginalLength'] / $cropData['y']['TargetLength'];
+        $cropAxis = null;
+        $scaleRatio = null;
+
         if ($cropData['x']['ScaleRatio'] < $cropData['y']['ScaleRatio']) {
             // Top and/or bottom of image will be lost
             $cropAxis = 'y';
@@ -151,6 +230,7 @@ class DBFocusPoint extends DBComposite
             $cropAxis = 'x';
             $scaleRatio = $cropData['y']['ScaleRatio'];
         }
+
         $cropData['CropAxis'] = $cropAxis;
 
         // Adjust dimensions for cropping
@@ -168,12 +248,15 @@ class DBFocusPoint extends DBComposite
             // Limit offset so image remains filled
             $remainder = $scaledImageLength - $focusPos;
             $croppedRemainder = $cropData[$cropAxis]['TargetLength'] - $frameCenter;
+
             if ($remainder < $croppedRemainder) {
                 $focusShift -= $croppedRemainder - $remainder;
             }
+
             if ($focusShift < 0) {
                 $focusShift = 0;
             }
+
             // Set cropping start point
             $cropData['CropOffset'] = $focusShift;
             // Update Focus point location for cropped image
@@ -185,76 +268,94 @@ class DBFocusPoint extends DBComposite
     }
 
     /**
-     * Generate a cropped version of the given image
-     * @param int $width desired width
-     * @param int $height desired height
-     * @param Image $image the image to crop. If not set, the current record will be used
-     * @param bool $upscale whether or not upscaling is allowed
-     * @return AssetContainer|null
+     * Apply a cropData array to an Image_Backend instance
+     *
+     * @param Image_Backend $backend the image to crop. If not set, the current record will be used
+     * @param array $cropData Crop data to apply to this
+     * @return Image_Backend|null New image if resized, or null if no resize needed
      */
-    public function FocusFill($width, $height, AssetContainer $image, $upscale = true)
+    public function applyCrop(Image_Backend $backend, array $cropData): ?Image_Backend
     {
-        if (!$image && $this->record instanceof Image) {
-            $image = $this->record;
+        $width = $cropData['x']['TargetLength'];
+        $height = $cropData['y']['TargetLength'];
+        $cropAxis = $cropData['CropAxis'];
+        $cropOffset = $cropData['CropOffset'];
+
+        // Resize based on axis
+        switch ($cropAxis) {
+            case 'x':
+                //Generate image
+                return $backend
+                    ->resizeByHeight($height)
+                    ->crop(0, $cropOffset, $width, $height);
+            case 'y':
+                //Generate image
+                return $backend
+                    ->resizeByWidth($width)
+                    ->crop($cropOffset, 0, $width, $height);
+            default:
+                //Generate image without cropping
+                return $backend->resize($width, $height);
         }
-        $width = intval($width);
-        $height = intval($height);
-        $imgW = $image->getWidth();
-        $imgH = $image->getHeight();
+    }
 
-        // Don't enlarge
-        if (!$upscale) {
-            $widthRatio = $imgW / $width;
-            $heightRatio = $imgH / $height;
-            if ($widthRatio < 1 && $widthRatio <= $heightRatio) {
-                $width = $imgW;
-                $height = intval(round($height * $widthRatio));
-            } elseif ($heightRatio < 1) {
-                $height = $imgH;
-                $width = intval(round($width * $heightRatio));
-            }
-        }
+    /**
+     * Generate a percentage based description of x focus point for use in CSS.
+     * Range is 0% - 100%. Example x=.5 translates to 75%
+     * Use in templates with {$PercentageX}%.
+     */
+    public function PercentageX(): int
+    {
+        return intval(round(DBFocusPoint::focusCoordToOffset($this->getX()) * 100));
+    }
 
-        //Only resize if necessary
-        if ($image->isSize($width, $height) && !Config::inst()->get(DBFile::class, 'force_resample')) {
-            return $image;
-        } elseif ($cropData = $this->calculateCrop($width, $height, $imgW, $imgH)) {
-            $variant = $image->variantName(__FUNCTION__, $width, $height, $cropData['CropAxis'], $cropData['CropOffset']);
-            $cropped = $image->manipulateImage($variant, function (Image_Backend $backend) use ($width, $height, $cropData) {
-                $img = null;
-                $cropAxis = $cropData['CropAxis'];
-                $cropOffset = $cropData['CropOffset'];
+    /**
+     * Generate a percentage based description of y focus point for use in CSS.
+     * Range is 0% - 100%. Example y=-.5 translates to 25%
+     * Use in templates with {$PercentageY}%.
+     */
+    public function PercentageY(): int
+    {
+        return intval(round(DBFocusPoint::focusCoordToOffset($this->getY()) * 100));
+    }
 
-                if ($cropAxis == 'x') {
-                    //Generate image
-                    $img = $backend
-                        ->resizeByHeight($height)
-                        ->crop(0, $cropOffset, $width, $height);
-                } elseif ($cropAxis == 'y') {
-                    //Generate image
-                    $img = $backend
-                        ->resizeByWidth($width)
-                        ->crop($cropOffset, 0, $width, $height);
-                } else {
-                    //Generate image without cropping
-                    $img = $backend->resize($width, $height);
-                }
+    /**
+     * Legacy X (Focus X in legacy coordinate system)
+     *
+     * @return float Decimal number between -1 & 1, where -1 is far left, 0 is center, 1 is far right.
+     */
+    public function LegacyX(): float
+    {
+        return $this->getX();
+    }
 
-                if (!$img) {
-                    return null;
-                }
+    /**
+     * Legacy Y (Focus Y in legacy coordinate system)
+     *
+     * @return float Decimal number between -1 & 1, where -1 is bottom, 0 is center, 1 is top.
+     */
+    public function LegacyY(): float
+    {
+        return $this->getY() == 0 ? 0 : $this->getY() * -1;
+    }
 
-                return $img;
-            });
+    /**
+     * Offset X (Focus X in web coordinate system)
+     *
+     * @return float Decimal number between 0 & 1, where 0 is far left, 0.5 is center, 1 is far right.
+     */
+    public function OffsetX(): float
+    {
+        return DBFocusPoint::focusCoordToOffset($this->getX());
+    }
 
-            // Update FocusPoint
-            $cropped->FocusPoint = DBField::create_field(static::class, [
-                'X' => $cropData['x']['FocusPoint'],
-                'Y' => $cropData['y']['FocusPoint']
-            ]);
-
-            return $cropped;
-        }
-        return null;
+    /**
+     * Offset Y (Focus Y in web coordinate system)
+     *
+     * @return float Decimal number between 0 & 1, where 0 is top, 0 .5 is center, 1 is bottom.
+     */
+    public function OffsetY(): float
+    {
+        return DBFocusPoint::focusCoordToOffset($this->getY());
     }
 }

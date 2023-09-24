@@ -2,6 +2,22 @@
 
 > 🎶 Turn and face the strange 🎶
 
+## 5.0
+
+* Updated to support Silverstripe CMS v5 (thanks @chrispenny)
+* LegacyX/Y and OffsetX/Y helper methods added
+* Minimum PHP requirement raised to 8.1
+
+## 4.0
+
+* Refactored to facilitate performance improvements (thanks @tractorcow and @kinglozzer)
+* Minimum PHP requirement raised to 7.2
+
+#### Upgrading
+
+* If you're using `$PercentageX` and `$PercentageY` in your templates they'll need to be changed to `$FocusPoint.PercentageX` and `$FocusPoint.PercentageY`
+* For optimal performance, run the *'Hydrate the focuspoint extension image size cache'* dev task after installing.
+
 ## 3.0
 
 * Changed from two individual Fields on `Image` to a composite DB-field.
