@@ -11,6 +11,9 @@ use SilverStripe\View\ViewableData;
  */
 class FocusPointDBFileExtension extends FocusPointExtension
 {
+
+    public $focuspoint_object;
+
     /**
      * Get focus point for this image; Prevent failover to backend Image
      *
@@ -18,8 +21,8 @@ class FocusPointDBFileExtension extends FocusPointExtension
      */
     public function getFocusPoint(): ?DBFocusPoint
     {
-        if (property_exists($this->owner, 'focuspoint_object')) {
-            return $this->owner->focuspoint_object;
+        if (property_exists($this, 'focuspoint_object')) {
+            return $this->focuspoint_object;
         }
 
         // If this DB file was generated from a source image,
@@ -53,7 +56,7 @@ class FocusPointDBFileExtension extends FocusPointExtension
      */
     public function setFocusPoint(?DBFocusPoint $point): self
     {
-        $this->owner->focuspoint_object = $point;
+        $this->focuspoint_object = $point;
         return $this;
     }
 }
